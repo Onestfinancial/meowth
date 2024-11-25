@@ -1,0 +1,181 @@
+service: meowth
+
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  environment:
+    NODE_ENV: ${opt:stage, 'dev'}
+    DB_HOST: ${ssm:/${self:provider.stage}/rds_aurora_backend/host_writer}
+    DB_PORT: ${ssm:/${self:provider.stage}/postgresql/port}
+    DB_USER: ${ssm:/${self:provider.stage}/rds_aurora_backend/${self:service}/username}
+    DB_NAME: ${ssm:/${self:provider.stage}/rds_aurora_backend/${self:service}/database}
+    DB_PASSWORD: ${ssm:/${self:provider.stage}/rds_aurora_backend/${self:service}/password}
+    REGION: ${ssm:/${self:provider.stage}/aws_region}
+    CUSTOMER_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/customer/albUrl}
+    USER_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/user/albUrl}
+    CHALLENGE_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/challenge/albUrl}
+    TRANSACTION_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/transaction/albUrl}
+    LOAN_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/loan/albUrl}
+    INSTALLMENT_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/installment/albUrl}
+    SEQUENCER_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/sequencer/albUrl}
+    IMAGE_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/image/albUrl}
+    LOAN_ORCHESTRATOR_SERVICE_URL: ${ssm:/${self:provider.stage}/lambda/loanorchestrator/albUrl}
+    SLACK_BOT_TOKEN: ${ssm:/${self:provider.stage}/slack/slack_oauth_token_onestbot}
+    KAFKA_SERVICE_URL: ${ssm:/${self:provider.stage}/msk/endpoint}
+  iam:
+    role:
+      statements:
+        - Effect: "Allow"
+          Action:
+            - "ssm:GetParameter"
+            - "ssm:GetParametersByPath"
+            - "kms:Decrypt"
+          Resource:
+            - "arn:aws:ssm:us-east-1:${aws:accountId}:parameter/${self:provider.stage}/*"
+            - "arn:aws:kms:us-east-1:${aws:accountId}:key/*"
+        - Effect: "Allow"
+          Action:
+            - "cloudwatch:PutMetricData"
+            - "logs:CreateLogGroup"
+            - "logs:CreateLogStream"
+            - "logs:PutLogEvents"
+            - "xray:PutTraceSegments"
+            - "xray:PutTelemetryRecords"
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - "kafka-cluster:Connect"
+            - "kafka-cluster:DescribeCluster"
+            - "kafka-cluster:DescribeTopic"
+            - "kafka-cluster:CreateTopic"
+            - "kafka-cluster:WriteData"
+            - "kafka-cluster:ReadData"
+          Resource:
+            - "arn:aws:kafka:${self:provider.region}:${aws:accountId}:cluster/${self:provider.stage}-msk-cluster/*"
+
+  memorySize: 1024
+  timeout: 29
+  vpc:
+    securityGroupIds:
+      - ${ssm:/${self:provider.stage}/lambda/securityGroupId}
+    subnetIds:
+      - ${ssm:/${self:provider.stage}/vpc/PrivateSubnetId1}
+      - ${ssm:/${self:provider.stage}/vpc/PrivateSubnetId2}
+      - ${ssm:/${self:provider.stage}/vpc/PrivateSubnetId3}
+  tracing:
+    lambda: true
+  tags:
+    Environment: ${self:provider.stage}
+    Project: "backend"
+    Owner: "backend"
+    Cost_center: "backend"
+    Service: "backend"
+    Department: "developers"
+    Confidentiality: "Internal"
+    Compliance: "none"
+    Security_level: "Critical"
+    Data_protection: "none"
+    Retention_policy: "none"
+
+functions:
+  app:
+    handler: dist/index.handler
+    name: ${self:provider.stage}-${self:service}-app
+    ephemeralStorageSize: 2048 # Ephemeral Storage
+    layers:
+      - arn:aws:lambda:${self:provider.region}:580247275435:layer:LambdaInsightsExtension:14
+    events:
+      - alb:
+          listenerArn:
+            Ref: MyListener
+          conditions:
+            host:
+              - ${self:provider.stage}-${self:service}.${ssm:/${self:provider.stage}/root_domain}
+            path:
+              - /*
+          priority: 1
+
+package:
+  patterns:
+    - 'node_modules/**'
+    - '!src/tests/**'
+    - '!*.md'
+    - 'src/**'
+    - 'package.json'
+    - 'dist/**'
+
+plugins:
+  - serverless-dotenv-plugin
+  - serverless-ssm-publish
+  - serverless-plugin-log-retention
+
+resources:
+  Resources:
+    MyLoadBalancer:
+      Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+      Properties:
+        Name: '${self:provider.stage}-${self:service}-app'
+        Subnets:
+          - ${ssm:/${self:provider.stage}/vpc/PrivateSubnetId1}
+          - ${ssm:/${self:provider.stage}/vpc/PrivateSubnetId2}
+          - ${ssm:/${self:provider.stage}/vpc/PrivateSubnetId3}
+        SecurityGroups:
+          - ${ssm:/${self:provider.stage}/lambda/securityGroupId}
+        Scheme: internal
+        Type: application
+
+    MyTargetGroup:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        Name: '${self:provider.stage}-${self:service}-app'
+        TargetType: lambda
+        Targets:
+          - Id: 
+              Fn::GetAtt: 
+                - AppLambdaFunction
+                - Arn
+
+    MyListener:
+      Type: AWS::ElasticLoadBalancingV2::Listener
+      DependsOn: MyLoadBalancer
+      Properties:
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn:
+              Ref: MyTargetGroup
+        LoadBalancerArn:
+          Ref: MyLoadBalancer
+        Port: 443
+        Protocol: HTTPS
+        Certificates:
+          - CertificateArn: ${ssm:/${self:provider.stage}/onestfinancial.com/certificateArn}
+
+    MyRecordSet:
+      Type: AWS::Route53::RecordSet
+      Properties:
+        HostedZoneId: "${ssm:/${self:provider.stage}/HostedZoneId}"
+        Name: '${self:provider.stage}-${self:service}.${ssm:/${self:provider.stage}/root_domain}'
+        Type: A
+        AliasTarget:
+          HostedZoneId: !GetAtt MyLoadBalancer.CanonicalHostedZoneID
+          DNSName: !GetAtt MyLoadBalancer.DNSName
+          EvaluateTargetHealth: false
+
+  Outputs:
+    LoadBalancerDNSName:
+      Description: "DNS Name of the Load Balancer"
+      Value: !Sub "https://${self:provider.stage}-${self:service}.${ssm:/${self:provider.stage}/root_domain}/api"
+
+custom:
+  logRetentionInDays: 14
+  ssmPublish:
+    enabled: true
+    params:
+      - path: "/${self:provider.stage}/lambda/${self:service}/albUrl"
+        source: LoadBalancerDNSName
+        description: "URL for the ALB"
+        secure: false
