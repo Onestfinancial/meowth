@@ -1,7 +1,7 @@
 // controllers/http/rewardBalanceController.ts
 
 import { Request, Response } from "express";
-import * as dbRewardBalance from "../../db/rewardBalance";
+import * as dbRewardBalance from "../db/rewardBalance";
 
 /**
  * Get RewardBalance by ID.

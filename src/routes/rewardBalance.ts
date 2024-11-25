@@ -6,7 +6,7 @@ import {
   getRewardBalanceByCustomerIdController,
   createRewardBalanceController,
   updateRewardBalanceByIdController,
-} from "../controllers/http/rewardBalance";
+} from "../controllers/rewardBalance";
 
 const router = Router();
 
